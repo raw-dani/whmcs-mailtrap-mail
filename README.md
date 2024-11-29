@@ -21,7 +21,7 @@ Modul mail provider WHMCS untuk mengirim email menggunakan Mailtrap.
 
 ## Konfigurasi
 
-- **API Token**: Token API dari Mailtrap
+- **API Token**: Token API dari Mailtrap.io
 - **From Email**: Alamat email pengirim
 - **From Name**: Nama pengirim
 
