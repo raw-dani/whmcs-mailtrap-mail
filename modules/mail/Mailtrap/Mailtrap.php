@@ -17,6 +17,7 @@ use WHMCS\Exception\Mail\SendFailure;
 use WHMCS\Mail\Message;
 use WHMCS\Module\Contracts\SenderModuleInterface;
 use WHMCS\Module\MailSender\DescriptionTrait;
+use WHMCS\Config\Setting;
 
 class Mailtrap implements SenderModuleInterface
 {
@@ -27,6 +28,25 @@ class Mailtrap implements SenderModuleInterface
     private $authorUrl = 'https://www.linkedin.com/in/rohmat-ali-wardani/';
     private $version = '1.0.0';
 
+    private function getWhmcsEmailSettings()
+    {
+        $email = Setting::getValue('Email');
+        $companyName = Setting::getValue('CompanyName');
+
+        // Log untuk debugging
+        error_log('WHMCS Email: ' . $email);
+        error_log('WHMCS Company: ' . $companyName);
+
+        if (empty($email)) {
+            throw new \Exception('Email pengirim belum diatur di WHMCS. Silakan atur di Setup > General Settings > General.');
+        }
+
+        return [
+            'from_email' => $email,
+            'from_name' => $companyName ?: 'WHMCS System'
+        ];
+    }
+
     public function settings()
     {
         return [
@@ -34,16 +54,26 @@ class Mailtrap implements SenderModuleInterface
                 'FriendlyName' => 'API Token',
                 'Type' => 'password',
                 'Description' => 'Masukkan API Token dari Mailtrap',
+                'Required' => true,
+            ],
+            'use_whmcs_email' => [
+                'FriendlyName' => 'Gunakan Email WHMCS',
+                'Type' => 'yesno',
+                'Description' => 'Gunakan email dari pengaturan WHMCS (Setup > General Settings > General)',
+                'Default' => 'yes',
+                'Required' => true,
             ],
             'from_email' => [
                 'FriendlyName' => 'From Email',
                 'Type' => 'text',
-                'Description' => 'Alamat email pengirim',
+                'Description' => 'Alamat email pengirim (wajib diisi jika tidak menggunakan email WHMCS)',
+                'Required' => false,
             ],
             'from_name' => [
                 'FriendlyName' => 'From Name',
                 'Type' => 'text',
-                'Description' => 'Nama pengirim',
+                'Description' => 'Nama pengirim (opsional, akan menggunakan nama perusahaan dari WHMCS jika kosong)',
+                'Required' => false,
             ],
             'author_info' => [
                 'FriendlyName' => 'Developer Info',
@@ -51,6 +81,42 @@ class Mailtrap implements SenderModuleInterface
                 'Description' => 'Developed by <a href="' . $this->authorUrl . '" target="_blank">' . $this->author . '</a>',
             ],
         ];
+    }
+
+    private function getSenderDetails(array $settings)
+    {
+        try {
+            // Log untuk debugging
+            error_log('Settings: ' . print_r($settings, true));
+            error_log('Use WHMCS Email: ' . $settings['use_whmcs_email']);
+
+            if (isset($settings['use_whmcs_email']) && ($settings['use_whmcs_email'] === 'yes' || $settings['use_whmcs_email'] === 'on' || $settings['use_whmcs_email'] == 1)) {
+                $whmcsSettings = $this->getWhmcsEmailSettings();
+                
+                error_log('WHMCS Settings: ' . print_r($whmcsSettings, true));
+                
+                if (empty($whmcsSettings['from_email'])) {
+                    throw new \Exception('Email pengirim dari WHMCS tidak valid');
+                }
+
+                return [
+                    'email' => $whmcsSettings['from_email'],
+                    'name' => $whmcsSettings['from_name']
+                ];
+            }
+
+            if (empty($settings['from_email'])) {
+                throw new \Exception('Email pengirim harus diisi jika tidak menggunakan email WHMCS');
+            }
+
+            return [
+                'email' => $settings['from_email'],
+                'name' => $settings['from_name'] ?: 'WHMCS System'
+            ];
+        } catch (\Exception $e) {
+            error_log('Mailtrap getSenderDetails Error: ' . $e->getMessage());
+            throw new \Exception('Konfigurasi email pengirim tidak valid: ' . $e->getMessage());
+        }
     }
 
     public function getName()
@@ -105,10 +171,15 @@ class Mailtrap implements SenderModuleInterface
         $currentAdmin = (new CurrentUser)->admin();
 
         try {
+            $sender = $this->getSenderDetails($settings);
+            
+            // Log untuk debugging
+            error_log('Test Connection Sender: ' . print_r($sender, true));
+
             $data = [
                 'from' => [
-                    'name' => $settings['from_name'],
-                    'email' => $settings['from_email']
+                    'name' => $sender['name'],
+                    'email' => $sender['email']
                 ],
                 'to' => [
                     ['email' => $currentAdmin->email]
@@ -134,10 +205,12 @@ class Mailtrap implements SenderModuleInterface
     public function send(array $settings, Message $message)
     {
         try {
+            $sender = $this->getSenderDetails($settings);
+            
             $data = [
                 'from' => [
-                    'name' => $settings['from_name'],
-                    'email' => $settings['from_email']
+                    'name' => $sender['name'],
+                    'email' => $sender['email']
                 ],
                 'to' => [],
                 'subject' => $message->getSubject()
@@ -145,21 +218,29 @@ class Mailtrap implements SenderModuleInterface
 
             // Set recipients
             foreach ($message->getRecipients('to') as $to) {
-                $data['to'][] = ['email' => $to[0], 'name' => $to[1]];
+                $data['to'][] = ['email' => $to[0], 'name' => $to[1] ?: ''];
             }
 
-            // Set CC
+            // Set CC - perbaikan format
             if ($cc = $message->getRecipients('cc')) {
-                $data['cc'] = array_map(function($recipient) {
-                    return ['email' => $recipient[0], 'name' => $recipient[1]];
-                }, $cc);
+                $data['cc'] = [];
+                foreach ($cc as $recipient) {
+                    $data['cc'][] = [
+                        'email' => $recipient[0],
+                        'name' => $recipient[1] ?: ''
+                    ];
+                }
             }
 
-            // Set BCC
+            // Set BCC - perbaikan format
             if ($bcc = $message->getRecipients('bcc')) {
-                $data['bcc'] = array_map(function($recipient) {
-                    return ['email' => $recipient[0], 'name' => $recipient[1]];
-                }, $bcc);
+                $data['bcc'] = [];
+                foreach ($bcc as $recipient) {
+                    $data['bcc'][] = [
+                        'email' => $recipient[0],
+                        'name' => $recipient[1] ?: ''
+                    ];
+                }
             }
 
             // Set content
@@ -175,9 +256,9 @@ class Mailtrap implements SenderModuleInterface
 
             // Set Reply-To
             if ($replyTo = $message->getReplyTo()) {
-                $data['replyTo'] = [
+                $data['reply_to'] = [
                     'email' => $replyTo['email'],
-                    'name' => $replyTo['name']
+                    'name' => $replyTo['name'] ?: ''
                 ];
             }
 
@@ -197,10 +278,14 @@ class Mailtrap implements SenderModuleInterface
                 }
             }
 
+            // Log untuk debugging
+            error_log('Mailtrap Send Data: ' . print_r($data, true));
+
             $this->sendRequest($this->apiUrl, $data, $settings['ApiToken']);
 
         } catch (\Exception $e) {
             error_log('Mailtrap Send Error: ' . $e->getMessage());
+            error_log('Mailtrap Send Error Details: ' . print_r($e, true));
             throw new SendFailure("Gagal mengirim email: " . $e->getMessage());
         }
     }
